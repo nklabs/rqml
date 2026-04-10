@@ -23,7 +23,7 @@
 #include <QClipboard>
 #include <QCursor>
 #include <QFile>
-#include <QGuiApplication>
+#include <QApplication>
 #include <QQmlApplicationEngine>
 #include <QQmlContext>
 #include <QQuickItem>
@@ -276,7 +276,7 @@ public:
 
   Q_INVOKABLE void copyTextToClipboard( const QString &text ) const
   {
-    QGuiApplication::clipboard()->setText( text );
+    QApplication::clipboard()->setText( text );
   }
 
   Q_INVOKABLE bool canCreateDesktopEntry() const
@@ -333,7 +333,7 @@ private:
 
 int main( int argc, char *argv[] )
 {
-  QGuiApplication app( argc, argv );
+  QApplication app( argc, argv );
 
   std::string config_dir =
       QStandardPaths::writableLocation( QStandardPaths::AppConfigLocation ).toStdString();
@@ -358,7 +358,7 @@ int main( int argc, char *argv[] )
   if ( engine.rootObjects().isEmpty() )
     return -1;
 
-  return QGuiApplication::exec();
+  return QApplication::exec();
 }
 
 #include "rqml.moc"

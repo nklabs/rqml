@@ -16,7 +16,7 @@ find_package(nlohmann_json REQUIRED)
 find_package(qml6_ros2_plugin REQUIRED)
 find_package(yaml_cpp_vendor REQUIRED)
 
-find_package(Qt6 REQUIRED COMPONENTS Core Gui Qml Quick)
+find_package(Qt6 REQUIRED COMPONENTS Core Gui Qml Quick Widgets)
 qt6_add_resources(
   QML_RESOURCES ${CMAKE_CURRENT_SOURCE_DIR}/qml.qrc) # Use absolute path
 set(CMAKE_AUTOMOC ON)
@@ -70,7 +70,7 @@ add_executable(rqml ${HEADERS} ${SOURCES} ${APP_ICON_RESOURCE})
 target_sources(rqml PRIVATE ${QML_RESOURCES}) # Ensure resources are included
 target_link_libraries(rqml
   PRIVATE
-  Qt6::Core Qt6::Gui Qt6::Qml Qt6::Quick
+  Qt6::Core Qt6::Gui Qt6::Qml Qt6::Quick Qt6::Widgets
   KDAB::kddockwidgets
   ament_index_cpp::ament_index_cpp qml6_ros2_plugin::qml6_ros2_plugin yaml-cpp)
 target_compile_definitions(rqml PRIVATE
