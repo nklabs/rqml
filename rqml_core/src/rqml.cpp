@@ -347,6 +347,7 @@ int main( int argc, char *argv[] )
   RQml::instance().init( &engine );
   rqml_context = std::make_unique<RQmlWrapper>();
   qRegisterMetaType<RQmlPlugin>();
+  engine.rootContext()->setContextProperty( "_pid", QCoreApplication::applicationPid());
   engine.rootContext()->setContextProperty( "RQml", rqml_context.get() );
   engine.rootContext()->setContextProperty( "QtVersion", QString( qVersion() ) );
   engine.load( QUrl( QStringLiteral( "qrc:/qml/main.qml" ) ) );

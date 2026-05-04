@@ -212,7 +212,7 @@ ApplicationWindow {
 
     Component.onCompleted: {
         if (!Ros2.isInitialized()) {
-            Ros2.init("rqml");
+            Ros2.init(`rqml_${_pid}`);
         }
     }
 
