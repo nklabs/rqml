@@ -162,6 +162,11 @@ Item {
             control.text = text;
             if (!popup.visible && control.filteredItems.length > 0)
                 popup.open();
+            const items = model || [];
+            if (items.indexOf(text) >= 0) {
+                popup.close();
+                control.accepted(text);
+            }
             listView.currentIndex = -1;
         }
 
@@ -241,6 +246,7 @@ Item {
 
                 onClicked: {
                     ListView.view.theControl.text = modelData;
+                    ListView.view.theControl.accepted(modelData);
                     ListView.view.currentIndex = index;
                     ListView.view.thePopup.close();
                     ListView.view.theField.forceActiveFocus();
