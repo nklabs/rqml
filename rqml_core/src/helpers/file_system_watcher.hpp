@@ -18,26 +18,39 @@
 #ifndef RQML_FILE_WATCHER_H
 #define RQML_FILE_WATCHER_H
 
+#include <QString>
+#include <QStringList>
+
+#include <atomic>
+#include <cstdint>
+#include <filesystem>
 #include <map>
+#include <memory>
 #include <set>
 #include <string>
 #include <vector>
 
+class QFileSystemWatcher;
+
 namespace rqml
 {
 
-//! Watches files and directories for changes.
+/*!
+ * Watches files and directories for changes.
+ *
+ * Built on QFileSystemWatcher, so it works on every platform Qt supports. Change notifications are
+ * delivered as Qt signals, so the watcher must be created in, and used from, a thread that runs a Qt
+ * event loop. checkForChanges() itself may be called from any thread.
+ */
 class FileSystemWatcher
 {
-  struct WatchInfo {
-    bool is_directory;
-    std::set<std::string, std::less<>> filenames;
-  };
-
 public:
   FileSystemWatcher();
 
   ~FileSystemWatcher();
+
+  FileSystemWatcher( const FileSystemWatcher & ) = delete;
+  FileSystemWatcher &operator=( const FileSystemWatcher & ) = delete;
 
   bool isValid() const;
 
@@ -51,15 +64,53 @@ public:
   bool checkForChanges() const;
 
 private:
-  void removeFolderWatchIfNoFilesLeft( const std::string &path );
+  struct Target {
+    QString path; //!< Canonical path (symlinks resolved, '/' separators)
+    bool is_directory;
+  };
 
-  int file_descriptor_ = -1;
-  std::map<std::string, int, std::less<>> watched_directories_;
+  struct FileState {
+    bool exists = false;
+    std::uintmax_t size = 0;
+    std::filesystem::file_time_type modified{};
+
+    bool operator==( const FileState &other ) const
+    {
+      return exists == other.exists && size == other.size && modified == other.modified;
+    }
+    bool operator!=( const FileState &other ) const { return !( *this == other ); }
+  };
+
+  static FileState readFileState( const QString &path );
+
+  //! Recomputes the set of watched directories and files from targets_ and syncs the QFileSystemWatcher.
+  void rebuildWatches();
+
+  //! Compares a tracked file with its last known state, flags a change and re-adds its watch if needed.
+  void checkFile( const QString &path );
+
+  void onFileChanged( const QString &path );
+
+  void onDirectoryChanged( const QString &path );
+
+  std::unique_ptr<QFileSystemWatcher> watcher_;
+
+  //! Paths as passed to addWatch. A path appears once per addWatch call (reference counting).
   std::vector<std::string> watched_paths_;
-  /*!
-   * Map from folder handle to watched file
-   */
-  std::map<int, WatchInfo> watch_info_;
+
+  //! Resolved target for each distinct path passed to addWatch.
+  std::map<std::string, Target, std::less<>> targets_;
+
+  //! Every directory below a watched directory (recursive) with its last seen entry listing.
+  std::map<QString, QStringList> content_directories_;
+
+  //! Files that were watched explicitly (not as part of a directory watch).
+  std::set<QString> explicit_files_;
+
+  //! Last known state of every tracked file (explicit files and files in content directories).
+  std::map<QString, FileState> file_states_;
+
+  mutable std::atomic<bool> changed_{ false };
 };
 } // namespace rqml
 

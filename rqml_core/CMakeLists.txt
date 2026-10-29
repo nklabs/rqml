@@ -15,6 +15,7 @@ find_package(ament_index_cpp REQUIRED)
 find_package(nlohmann_json REQUIRED)
 find_package(qml6_ros2_plugin REQUIRED)
 find_package(yaml_cpp_vendor REQUIRED)
+find_package(yaml-cpp REQUIRED)
 
 find_package(Qt6 REQUIRED COMPONENTS Core Gui Qml Quick Widgets)
 qt6_add_resources(
@@ -63,7 +64,7 @@ set(SOURCES
 set(APP_ICON_RESOURCE)
 if (WIN32)
   # On Windows, we add the .rc file to the executable
-  set(APP_ICON_RESOURCE "${CMAKE_CURRENT_SOURCE_DIR}/assets/windows_icon.rc")
+  set(APP_ICON_RESOURCE "${CMAKE_CURRENT_SOURCE_DIR}/assets/icons.rc")
 endif ()
 
 add_executable(rqml ${HEADERS} ${SOURCES} ${APP_ICON_RESOURCE})
@@ -72,7 +73,7 @@ target_link_libraries(rqml
   PRIVATE
   Qt6::Core Qt6::Gui Qt6::Qml Qt6::Quick Qt6::Widgets
   KDAB::kddockwidgets
-  ament_index_cpp::ament_index_cpp qml6_ros2_plugin::qml6_ros2_plugin yaml-cpp)
+  ament_index_cpp::ament_index_cpp qml6_ros2_plugin::qml6_ros2_plugin yaml-cpp::yaml-cpp)
 target_compile_definitions(rqml PRIVATE
   CMAKE_INSTALL_PREFIX="${CMAKE_INSTALL_PREFIX}"
 )

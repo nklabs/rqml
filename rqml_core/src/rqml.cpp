@@ -218,7 +218,7 @@ public:
   {
     const auto &config = RQml::instance().configManager().currentConfig();
     QVariantMap result;
-    result["path"] = QString::fromStdString( config );
+    result["path"] = QString::fromStdString( config.string() );
     return result;
   }
 
@@ -228,7 +228,7 @@ public:
     const auto &configs = RQml::instance().configManager().configs();
     for ( const auto &config : configs ) {
       QVariantMap map;
-      map["path"] = QString::fromStdString( config.path );
+      map["path"] = QString::fromStdString( config.path.string() );
       result.append( map );
     }
     return result;
@@ -240,7 +240,7 @@ public:
     const auto &configs = RQml::instance().configManager().recentConfigs();
     for ( const auto &path : configs ) {
       QVariantMap map;
-      map["path"] = QString::fromStdString( path );
+      map["path"] = QString::fromStdString( path.string() );
       result.append( map );
     }
     return result;

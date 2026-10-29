@@ -90,7 +90,7 @@ ConfigManager::~ConfigManager() = default;
 void ConfigManager::init()
 {
   if ( std::filesystem::is_regular_file( current_config_ ) ) {
-    load( current_config_ );
+    load( current_config_.string() );
   } else {
     save();
   }
@@ -98,7 +98,7 @@ void ConfigManager::init()
 
 void ConfigManager::addConfigDirectory( const std::filesystem::path &directory )
 {
-  std::string path = directory;
+  std::string path = directory.string();
   if ( path.substr( 0, 7 ) == "file://" ) {
     path = path.substr( 7 );
   }
@@ -117,7 +117,7 @@ void ConfigManager::addConfigDirectory( const std::filesystem::path &directory )
 
 void ConfigManager::removeConfigDirectory( const std::filesystem::path &directory )
 {
-  std::string path = directory;
+  std::string path = directory.string();
   if ( path.substr( 0, 7 ) == "file://" ) {
     path = path.substr( 7 );
   }
@@ -153,7 +153,7 @@ const std::vector<std::string> &ConfigManager::configDirectories() const
 {
   return config_directories_;
 }
-void ConfigManager::save() { save( current_config_ ); }
+void ConfigManager::save() { save( current_config_.string() ); }
 void ConfigManager::save( const std::string &path )
 {
   QByteArray array = layout_saver_->serializeLayout();
@@ -285,7 +285,7 @@ void ConfigManager::saveRecentConfigs()
   settings_.setValue( "size", static_cast<int>( recent_configs_.size() ) );
   for ( size_t i = 0; i < recent_configs_.size(); ++i ) {
     settings_.setArrayIndex( static_cast<int>( i ) );
-    settings_.setValue( "configPath", QString::fromStdString( recent_configs_[i] ) );
+    settings_.setValue( "configPath", QString::fromStdString( recent_configs_[i].string() ) );
   }
   settings_.endArray();
 }

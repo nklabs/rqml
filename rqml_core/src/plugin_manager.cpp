@@ -126,7 +126,7 @@ KDDockWidgets::Core::DockWidget *PluginManager::factoryFn( const QString &name )
     }
   }
   context->setContextObject( instance_it->second.get() );
-  dw->setGuestItem( "file://" + it_plugin->path_, context );
+  dw->setGuestItem( QUrl::fromLocalFile(it_plugin->path_).toString(), context );
   connect( dw, &KDDockWidgets::QtQuick::DockWidget::isOpenChanged, this,
            &PluginManager::onOpenChanged );
   it = KDDockWidgets::DockRegistry::self()->dockByName( name );
@@ -177,7 +177,7 @@ KDDockWidgets::QtQuick::DockWidget *PluginManager::createPlugin( const QString &
   dw->enableAttribute( Qt::WA_DeleteOnClose );
   auto *context = new QQmlContext( engine_->rootContext() );
   context->setContextObject( instance );
-  dw->setGuestItem( "file://" + it_plugin->path_, context );
+  dw->setGuestItem( QUrl::fromLocalFile(it_plugin->path_).toString(), context );
   connect( dw, &KDDockWidgets::QtQuick::DockWidget::isOpenChanged, this,
            &PluginManager::onOpenChanged );
   dw->open();
@@ -258,7 +258,7 @@ void PluginManager::reloadWidgets()
     auto it_plugin = findPluginById( plugin_id );
     if ( it_plugin == plugins_.end() )
       continue;
-    qdw->setGuestItem( "file://" + it_plugin->path_, context );
+    qdw->setGuestItem( QUrl::fromLocalFile(it_plugin->path_).toString(), context );
   }
 }
 
@@ -315,7 +315,7 @@ void PluginManager::loadPluginsFromResource( const std::string &name, const std:
       }
       const auto &full_path = std::filesystem::path( path ) / plugin_path;
       qDebug() << "Loaded plugin" << plugin_name.c_str() << "from" << full_path.c_str();
-      plugins_.emplace_back( plugin_id, plugin_name, full_path, plugin_group, single_instance );
+      plugins_.emplace_back( plugin_id, plugin_name, full_path.string(), plugin_group, single_instance );
     } catch ( const YAML::Exception &e ) {
       qWarning() << "Failed to parse plugin description for" << name.c_str() << ":" << e.what();
       continue;

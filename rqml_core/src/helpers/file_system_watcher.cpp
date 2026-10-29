@@ -17,25 +17,73 @@
 
 #include "file_system_watcher.hpp"
 
+#include <QDir>
+#include <QFileInfo>
+#include <QFileSystemWatcher>
 #include <QtCore>
-#include <filesystem>
-#include <sys/inotify.h>
-#include <sys/stat.h>
-#include <unistd.h>
+
+#include <algorithm>
+#include <system_error>
 
 namespace rqml
 {
+namespace
+{
 
-FileSystemWatcher::FileSystemWatcher() { file_descriptor_ = inotify_init1( IN_NONBLOCK ); }
+//! Ignore qmlc file changes because we create them. Some of them are temps and end in .qmlc.[RANDOMSTRING]
+bool isIgnoredName( const QString &name )
+{
+  return name.contains( QLatin1String( ".qmlc." ) ) || name.endsWith( QLatin1String( ".qmlc" ) );
+}
+
+//! Sorted directory entries, without ignored files.
+QStringList listDirectory( const QString &dir )
+{
+  QStringList entries = QDir( dir ).entryList(
+      QDir::AllEntries | QDir::NoDotAndDotDot | QDir::Hidden | QDir::System, QDir::Name );
+  entries.erase( std::remove_if( entries.begin(), entries.end(), isIgnoredName ), entries.end() );
+  return entries;
+}
+
+//! Collects dir and all of its subdirectories (following symlinks) together with their listings.
+void collectDirectories( const QString &dir, std::map<QString, QStringList> &out )
+{
+  // Already visited, e.g. through a symlink or because watched directories overlap.
+  // Checking before recursing also terminates symlink loops.
+  if ( out.count( dir ) != 0 || !QFileInfo( dir ).isDir() )
+    return;
+  const QStringList entries = listDirectory( dir );
+  out.emplace( dir, entries );
+  const QDir qdir( dir );
+  for ( const QString &name : entries ) {
+    const QFileInfo info( qdir.filePath( name ) );
+    if ( !info.isDir() )
+      continue;
+    const QString canonical = info.canonicalFilePath();
+    if ( !canonical.isEmpty() )
+      collectDirectories( canonical, out );
+  }
+}
+
+QSet<QString> toSet( const QStringList &list ) { return QSet<QString>( list.begin(), list.end() ); }
+} // namespace
+
+FileSystemWatcher::FileSystemWatcher() : watcher_( std::make_unique<QFileSystemWatcher>() )
+{
+  // Using the watcher as context object disconnects these automatically when it is destroyed.
+  QObject::connect( watcher_.get(), &QFileSystemWatcher::fileChanged, watcher_.get(),
+                    [this]( const QString &path ) { onFileChanged( path ); } );
+  QObject::connect( watcher_.get(), &QFileSystemWatcher::directoryChanged, watcher_.get(),
+                    [this]( const QString &path ) { onDirectoryChanged( path ); } );
+}
 
 FileSystemWatcher::~FileSystemWatcher()
 {
-  for ( const auto &[_, wd] : watched_directories_ ) { inotify_rm_watch( file_descriptor_, wd ); }
-  if ( file_descriptor_ >= 0 )
-    close( file_descriptor_ );
+  // Destroy the watcher before the state its callbacks use.
+  watcher_.reset();
 }
 
-bool FileSystemWatcher::isValid() const { return file_descriptor_ >= 0; }
+bool FileSystemWatcher::isValid() const { return watcher_ != nullptr; }
 
 bool FileSystemWatcher::addWatch( const std::string &path )
 {
@@ -46,156 +94,185 @@ bool FileSystemWatcher::addWatch( const std::string &path )
     watched_paths_.push_back( path );
     return true;
   }
-  if ( std::filesystem::is_symlink( path ) ) {
-    // Follow symlinks
-    std::error_code error;
-    std::string target = std::filesystem::read_symlink( path, error );
-    if ( error ) {
-      qWarning( "Could not read link '%s' (%s)!", path.c_str(), error.message().c_str() );
-      return false;
-    }
-    return addWatch( target );
-  }
-  const bool is_directory = std::filesystem::is_directory( path );
-  if ( !is_directory && !std::filesystem::is_regular_file( path ) ) {
-    return false;
-  }
 
-  std::string::size_type separator_pos = path.find_last_of( '/' );
-  std::filesystem::path p( path );
-  if ( !p.has_parent_path() )
+  // canonicalFilePath follows symlinks (including symlinked parent directories) and returns an
+  // empty string if the path does not exist.
+  const QString resolved = QFileInfo( QString::fromStdString( path ) ).canonicalFilePath();
+  if ( resolved.isEmpty() )
     return false;
-  std::string folder = is_directory ? path : p.parent_path().string();
+  const QFileInfo info( resolved );
+  const bool is_directory = info.isDir();
+  if ( !is_directory && !info.isFile() )
+    return false;
 
-  auto it = watched_directories_.find( folder );
-  if ( it == watched_directories_.end() ) {
-    int watch = inotify_add_watch( file_descriptor_, folder.c_str(),
-                                   IN_CREATE | IN_DELETE | IN_MODIFY | IN_CLOSE_WRITE | IN_MOVED_TO );
-    if ( watch < 0 )
-      return false;
-    if ( is_directory ) {
-      // Include subdirectories
-      for ( const auto &dir : std::filesystem::directory_iterator(
-                folder, std::filesystem::directory_options::follow_directory_symlink ) ) {
-        if ( !std::filesystem::is_directory( dir.path() ) )
-          continue;
-        if ( !addWatch( dir.path().string() ) ) {
-          qWarning( "Could not add file system watch for '%s'!", dir.path().c_str() );
-        }
-      }
-    }
-    it = watched_directories_.try_emplace( folder, watch ).first;
-    watch_info_.insert( { watch, { is_directory, {} } } );
+  targets_.emplace( path, Target{ resolved, is_directory } );
+  rebuildWatches();
+
+  // A file is watched through its parent directory (to catch it being replaced or recreated),
+  // so that directory watch has to be in place for the watch to work.
+  const QString required = is_directory ? resolved : info.absolutePath();
+  if ( !watcher_->directories().contains( required ) ) {
+    qWarning( "Could not add file system watch for '%s'!", path.c_str() );
+    targets_.erase( path );
+    rebuildWatches();
+    return false;
   }
   watched_paths_.push_back( path );
-  WatchInfo &info = watch_info_.at( it->second );
-  info.is_directory |= is_directory;
-  if ( !is_directory )
-    info.filenames.insert( path.substr( separator_pos + 1 ) );
   return true;
 }
 
 void FileSystemWatcher::removeWatch( const std::string &path )
 {
-  watched_paths_.erase( std::find( watched_paths_.begin(), watched_paths_.end(), path ) );
+  auto it = std::find( watched_paths_.begin(), watched_paths_.end(), path );
+  if ( it == watched_paths_.end() )
+    return;
+  watched_paths_.erase( it );
   // Only unregister if no other watches are left
   if ( std::find( watched_paths_.begin(), watched_paths_.end(), path ) != watched_paths_.end() )
     return;
-  if ( std::filesystem::is_symlink( path ) ) {
-    // Follow symlinks
-    std::error_code error;
-    std::string target = std::filesystem::read_symlink( path, error );
-    if ( error ) {
-      qWarning( "Could not read link '%s' (%s) when removing watch!", path.c_str(),
-                error.message().c_str() );
-      return;
-    }
-    removeWatch( target );
-    return;
-  }
-
-  // Check if folder
-  if ( auto it = watched_directories_.find( path ); it != watched_directories_.end() ) {
-    // Remove subfolder watches
-    for ( const auto &dir : std::filesystem::directory_iterator( path ) ) {
-      if ( !std::filesystem::is_directory( dir.path() ) || path == dir.path().string() )
-        continue;
-      removeWatch( dir.path().string() );
-    }
-    // This watch is not for a directory anymore but may still be needed for a file
-    watch_info_.at( it->second ).is_directory = false;
-    removeFolderWatchIfNoFilesLeft( path );
-    return;
-  }
-
-  std::string::size_type separator_pos = path.find_last_of( '/' );
-  if ( separator_pos == std::string::npos )
-    return;
-
-  std::string folder = path.substr( 0, separator_pos );
-  std::string filename = path.substr( separator_pos + 1 );
-  watch_info_.at( watched_directories_.at( folder ) ).filenames.erase( filename );
-  removeFolderWatchIfNoFilesLeft( folder );
+  targets_.erase( path );
+  rebuildWatches();
 }
 
 void FileSystemWatcher::removeAllWatches()
 {
-  for ( const auto &[_, wd] : watched_directories_ ) { inotify_rm_watch( file_descriptor_, wd ); }
-  watched_directories_.clear();
   watched_paths_.clear();
-  watch_info_.clear();
+  targets_.clear();
+  content_directories_.clear();
+  explicit_files_.clear();
+  file_states_.clear();
+  const QStringList paths = watcher_->files() + watcher_->directories();
+  if ( !paths.isEmpty() )
+    watcher_->removePaths( paths );
+  // Like the inotify implementation, changes on watches that no longer exist are dropped.
+  changed_ = false;
 }
 
-bool FileSystemWatcher::checkForChanges() const
+bool FileSystemWatcher::checkForChanges() const { return changed_.exchange( false ); }
+
+FileSystemWatcher::FileState FileSystemWatcher::readFileState( const QString &path )
 {
-  const size_t buffer_length = 16 * sizeof( struct inotify_event );
-  unsigned char buffer[buffer_length];
-  bool changed = false;
-  ssize_t count;
-  while ( ( count = read( file_descriptor_, buffer, buffer_length ) ) > 0 ) {
-    if ( changed )
-      continue;
-    size_t offset = 0;
-    const struct inotify_event *event;
-    while ( offset < static_cast<size_t>( count ) ) {
-      event = reinterpret_cast<const inotify_event *>( buffer + offset );
-      offset += sizeof( struct inotify_event ) + event->len;
+  namespace fs = std::filesystem;
+  FileState state;
+  std::error_code error;
+  const fs::path p( path.toStdU16String() );
+  if ( !fs::is_regular_file( p, error ) )
+    return state;
+  state.exists = true;
+  state.size = fs::file_size( p, error );
+  if ( error )
+    state.size = 0;
+  state.modified = fs::last_write_time( p, error );
+  if ( error )
+    state.modified = {};
+  return state;
+}
 
-      // Ignore qmlc file changes because we create them. Some of them are temps and end in .qmlc.[RANDOMSTRING]
-      if ( std::string name = event->name;
-           name.find( ".qmlc." ) != std::string::npos ||
-           ( name.length() > 5 && name.substr( name.length() - 5 ) == ".qmlc" ) ) {
-        continue;
-      }
+void FileSystemWatcher::rebuildWatches()
+{
+  std::map<QString, QStringList> directories;
+  std::set<QString> explicit_files;
+  for ( const auto &[_, target] : targets_ ) {
+    if ( target.is_directory )
+      collectDirectories( target.path, directories );
+    else
+      explicit_files.insert( target.path );
+  }
 
-      // Check if the change was on a watched file
-      auto it = watch_info_.find( event->wd );
-      if ( it == watch_info_.end() )
-        continue;
-      if ( it->second.is_directory ) {
-        changed = true;
-      } else if ( const auto &filenames = it->second.filenames;
-                  event->len && filenames.find( event->name ) != filenames.end() ) {
-        // Check if it was an action that might change the files content.
-        changed = event->mask & ( IN_MODIFY | IN_MOVED_TO | IN_CLOSE_WRITE );
-      }
-      if ( changed )
-        break;
+  // Files whose content is checked: explicitly watched files and all files in watched directories.
+  std::set<QString> files = explicit_files;
+  for ( const auto &[dir, entries] : directories ) {
+    const QDir qdir( dir );
+    for ( const QString &name : entries ) {
+      const QString file = qdir.filePath( name );
+      if ( QFileInfo( file ).isFile() )
+        files.insert( file );
     }
   }
-  return changed;
+
+  // Keep the last known state of files that were already tracked, so changes between the last
+  // event and this rebuild are not lost. New files start from their current state.
+  std::map<QString, FileState> states;
+  for ( const QString &file : files ) {
+    auto old = file_states_.find( file );
+    states.emplace( file, old != file_states_.end() ? old->second : readFileState( file ) );
+  }
+
+  QSet<QString> desired;
+  for ( const auto &[dir, _] : directories ) desired.insert( dir );
+  for ( const QString &file : explicit_files ) desired.insert( QFileInfo( file ).absolutePath() );
+  for ( const auto &[file, state] : states ) {
+    if ( state.exists )
+      desired.insert( file );
+  }
+
+  const QSet<QString> current = toSet( watcher_->files() ) + toSet( watcher_->directories() );
+  QStringList to_remove, to_add;
+  for ( const QString &path : current ) {
+    if ( !desired.contains( path ) )
+      to_remove << path;
+  }
+  for ( const QString &path : desired ) {
+    if ( !current.contains( path ) )
+      to_add << path;
+  }
+  if ( !to_remove.isEmpty() )
+    watcher_->removePaths( to_remove );
+  if ( !to_add.isEmpty() ) {
+    const QStringList failed = watcher_->addPaths( to_add );
+    for ( const QString &path : failed )
+      qWarning( "Could not add file system watch for '%s'!", qUtf8Printable( path ) );
+  }
+
+  content_directories_ = std::move( directories );
+  explicit_files_ = std::move( explicit_files );
+  file_states_ = std::move( states );
 }
 
-void FileSystemWatcher::removeFolderWatchIfNoFilesLeft( const std::string &path )
+void FileSystemWatcher::checkFile( const QString &path )
 {
-  for ( const auto &file : watched_paths_ ) {
-    if ( file.length() < path.length() || file.substr( 0, path.length() ) != path )
-      continue;
+  auto it = file_states_.find( path );
+  if ( it == file_states_.end() )
     return;
+  const FileState state = readFileState( path );
+  // A file that disappears is not a change by itself (same as the inotify implementation); it counts
+  // once it is recreated or replaced with new content.
+  if ( state.exists && state != it->second )
+    changed_ = true;
+  it->second = state;
+  // Many editors save by writing a temporary file and renaming it over the original. That replaces
+  // the watched file, which removes it from the watcher on some platforms, so re-add it.
+  if ( state.exists && !watcher_->files().contains( path ) )
+    watcher_->addPath( path );
+}
+
+void FileSystemWatcher::onFileChanged( const QString &path )
+{
+  if ( isIgnoredName( QFileInfo( path ).fileName() ) )
+    return;
+  checkFile( path );
+}
+
+void FileSystemWatcher::onDirectoryChanged( const QString &path )
+{
+  bool needs_rebuild = false;
+  if ( auto it = content_directories_.find( path ); it != content_directories_.end() ) {
+    // Entries were created, deleted or renamed in a watched directory. Listings exclude qmlc files,
+    // so the cache files we write ourselves do not count as a change.
+    if ( !QFileInfo( path ).isDir() || listDirectory( path ) != it->second ) {
+      changed_ = true;
+      // Pick up new or removed files and subdirectories
+      needs_rebuild = true;
+    }
   }
-  auto it = watched_directories_.find( path );
-  inotify_rm_watch( file_descriptor_, it->second );
-  watch_info_.erase( it->second );
-  watched_directories_.erase( it );
+
+  // Explicitly watched files in this directory may have been replaced or recreated.
+  for ( const QString &file : explicit_files_ ) {
+    if ( QFileInfo( file ).absolutePath() == path )
+      checkFile( file );
+  }
+
+  if ( needs_rebuild )
+    rebuildWatches();
 }
 } // namespace rqml
